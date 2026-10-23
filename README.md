@@ -63,3 +63,43 @@ npm run build:web
 Tests exercise the core and all API routes using Fastify injection without listening on a port. API tests use isolated in-memory databases plus a temporary file for restart persistence, and cover rollback, snapshots, warnings, validation, and not-found responses. `buildApp` accepts a database connection owned by its caller; the listening entrypoint handles connection shutdown.
 
 The root test and typecheck commands include every workspace. Frontend tests use Vitest, jsdom, and Testing Library with mocked HTTP responses to cover creation payloads, snapshot rendering, transient warnings, retrieval, validation, loading, empty catalogs, and API errors. `npm run build:web` verifies a production bundle in `apps/web/dist`; production hosting must route `/products` and `/quotes` to the API separately because the Vite proxy is development-only. No authentication, product editing, or stock reservation is included.
+
+## MCP server (Milestone 1D)
+
+`apps/mcp` exposes the REST API to local AI clients through the official MCP TypeScript SDK v2 (`@modelcontextprotocol/server`) over stdio, with Zod v4 input and output schemas. It has no database access or QuoteService dependency. Node.js 22+ is required.
+
+Start the API in one terminal with `npm run dev:api`. In another, launch MCP Inspector from the repository root:
+
+```sh
+npm run inspect:mcp
+# Equivalent:
+npx @modelcontextprotocol/inspector node --import tsx apps/mcp/src/index.ts
+```
+
+Connect using stdio, then open Tools to list and call the four tools. The direct server command is `node --import tsx apps/mcp/src/index.ts` (repository root working directory). `npm run start:mcp --silent` also starts it; the silent flag suppresses npm banners on protocol stdout. `npm run dev:mcp --silent` enables watching for development. Diagnostics use stderr.
+
+For a local MCP host, configure an entry like this, replacing the absolute paths with your checkout and Node executable as needed:
+
+```json
+{
+  "mcpServers": {
+    "inventory-agent": {
+      "command": "node",
+      "args": ["--import", "tsx", "/absolute/path/inventory-agent/apps/mcp/src/index.ts"],
+      "cwd": "/absolute/path/inventory-agent",
+      "env": { "INVENTORY_API_BASE_URL": "http://127.0.0.1:3000" }
+    }
+  }
+}
+```
+
+`INVENTORY_API_BASE_URL` defaults to `http://127.0.0.1:3000`; set it in the MCP process environment if the API runs elsewhere. HTTP requests time out after 10 seconds. The API must be running separately. This milestone provides no authentication or remote hosting.
+
+- `search_products({"query":"pen"})` fetches the catalog and returns **all** case-insensitive name/SKU substring matches, including IDs, names, SKUs, integer BRL cent prices and observed stock. It never selects among ambiguous matches. No matches returns an empty array.
+- `check_stock({"productId":"pen"})` finds an exact ID in the current catalog. Stock is an observation, with no promise of future availability.
+- `create_quote({"items":[{"productId":"pen","quantity":2}]})` calls `POST /quotes`. It returns the saved draft snapshots, total and temporary warnings, with an explicit availability notice. This changes state, is non-destructive and non-idempotent: repeating it creates another draft. It neither reserves stock nor confirms a sale. API business rules handle duplicate quantities and commercial calculations.
+- `get_quote({"quoteId":"QUOTE_ID"})` calls `GET /quotes/:id` and returns `{ "quote": {...} }` containing saved commercial snapshots only. It provides no historical stock or stock warnings.
+
+Every success includes both structured content and a JSON text representation. Query tools are annotated read-only and idempotent. Invalid tool inputs are rejected before HTTP; API failures and invalid response contracts become actionable tool errors. Failed or timed-out creation requests may have created a draft: do not automatically retry when the outcome is unknown.
+
+`npm test` and `npm run typecheck` include this workspace. MCP tests use an SDK client to exercise discovery, schemas, annotations, results and errors, plus a real subprocess stdio handshake. HTTP tool tests mock REST responses; existing API tests independently verify persistence and business rules. Inspector's browser UI is a manual check.

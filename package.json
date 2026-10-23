@@ -9,7 +9,10 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:api": "npm run dev --workspace @inventory-agent/api",
     "dev:web": "npm run dev --workspace @inventory-agent/web",
-    "build:web": "npm run build --workspace @inventory-agent/web"
+    "build:web": "npm run build --workspace @inventory-agent/web",
+    "start:mcp": "npm run start --workspace @inventory-agent/mcp --silent",
+    "dev:mcp": "npm run dev --workspace @inventory-agent/mcp --silent",
+    "inspect:mcp": "npx @modelcontextprotocol/inspector node --import tsx apps/mcp/src/index.ts"
   },
   "keywords": [],
   "author": "",
