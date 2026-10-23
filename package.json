@@ -12,7 +12,8 @@
     "build:web": "npm run build --workspace @inventory-agent/web",
     "start:mcp": "npm run start --workspace @inventory-agent/mcp --silent",
     "dev:mcp": "npm run dev --workspace @inventory-agent/mcp --silent",
-    "inspect:mcp": "npx @modelcontextprotocol/inspector node --import tsx apps/mcp/src/index.ts"
+    "inspect:mcp": "npx @modelcontextprotocol/inspector node --import tsx apps/mcp/src/index.ts",
+    "eval:setup": "npm run eval:setup --workspace @inventory-agent/api --silent"
   },
   "keywords": [],
   "author": "",

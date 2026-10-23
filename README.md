@@ -103,3 +103,9 @@ For a local MCP host, configure an entry like this, replacing the absolute paths
 Every success includes both structured content and a JSON text representation. Query tools are annotated read-only and idempotent. Invalid tool inputs are rejected before HTTP; API failures and invalid response contracts become actionable tool errors. Failed or timed-out creation requests may have created a draft: do not automatically retry when the outcome is unknown.
 
 `npm test` and `npm run typecheck` include this workspace. MCP tests use an SDK client to exercise discovery, schemas, annotations, results and errors, plus a real subprocess stdio handshake. HTTP tool tests mock REST responses; existing API tests independently verify persistence and business rules. Inspector's browser UI is a manual check.
+
+## Manual agent evaluation fixtures (Milestone 1E, phase 1)
+
+Run `npm run eval:setup --silent` to create a fresh, isolated temporary SQLite database and print its absolute path. Setup reuses the API initializer and adds two distinguishable glove products for ambiguity testing. It never resets or opens the development database, and each run starts with no quotes.
+
+See [the evaluation guide](docs/evaluation/README.md) for exact API/MCP startup commands, the deterministic catalog, five manual scenarios and objective pass/fail criteria. Copy [the results template](docs/evaluation/results-template.md) to record actual agent tool calls and outcomes. These scenarios have not been executed by a model as part of fixture setup or unit tests.
