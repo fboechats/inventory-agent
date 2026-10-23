@@ -1,84 +1,90 @@
 # Inventory Agent
 
-A local inventory and draft quote MVP with a React / Vite / Tailwind CSS frontend and a Node.js 22 / TypeScript API using Fastify and better-sqlite3. The core QuoteService owns draft creation, duplicate aggregation, commercial snapshots, and temporary stock warnings.
+Inventory Agent lets an AI agent discover catalog products, observe stock, and save draft quotes through four MCP tools. A React web interface supports the same quoting workflow. Both clients use one REST API, so quantities, prices, persistence, and stock warnings follow the same business rules.
 
-## Run
+A quote captures commercial terms; it does not reserve stock, guarantee availability, or confirm a sale. This is a local MVP with a fictional catalog.
 
-From the repository root:
+![Inventory Agent showing the catalog and a draft quote for 2 Moonbeam Notebooks and 3 Comet Pens, totaling BRL 35.50.](docs/assets/inventory-agent-preview.png)
+
+## Demo
+
+In an [observed manual agent run](docs/evaluation/first-manual-results.md), the agent called `search_products` twice, then `create_quote`, and saved this draft:
+
+| Product | Quantity | Unit price | Subtotal |
+| --- | ---: | ---: | ---: |
+| Moonbeam Notebook | 2 | BRL 12.50 | BRL 25.00 |
+| Comet Pen | 3 | BRL 3.50 | BRL 10.50 |
+| **Total** | | | **BRL 35.50** |
+
+The agent explicitly stated that no stock was reserved and no sale confirmed. This run used the development environment; saved-quote retrieval was not supplied as evidence.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Web[React Web] -->|REST| API[Fastify API]
+    Agent[AI agent] -->|MCP over stdio| MCP[MCP Server]
+    MCP -->|REST| API
+    API --> Service[QuoteService]
+    Service -->|Repositories| DB[(SQLite)]
+    API -->|Catalog and saved quote reads| DB
+```
+
+`packages/core` owns draft creation, duplicate aggregation, price calculations, snapshots, and stock warnings. `apps/api` provides validation, HTTP routes, and SQLite repositories. `apps/web` uses React, Vite, and Tailwind CSS; `apps/mcp` uses the MCP TypeScript SDK and Zod schemas.
+
+The MCP server reuses the REST API instead of accessing SQLite or duplicating business rules. This keeps web and agent quote creation consistent and lets the MCP layer focus on tool contracts, response validation, and actionable errors.
+
+## Features
+
+The web interface displays the catalog and current stock, creates drafts, and retrieves saved quotes by ID. The MCP server exposes:
+
+| Tool | Input | Behavior |
+| --- | --- | --- |
+| `search_products` | `{ "query": "pen" }` | Returns all case-insensitive name/SKU substring matches with exact IDs, prices in BRL cents, and observed stock. An empty result means no match. |
+| `check_stock` | `{ "productId": "pen" }` | Returns current observed stock for an exact catalog ID. |
+| `create_quote` | `{ "items": [{ "productId": "pen", "quantity": 2 }] }` | Saves a draft and returns commercial snapshots, total, temporary stock warnings, and an availability notice. |
+| `get_quote` | `{ "quoteId": "QUOTE_ID" }` | Returns saved commercial snapshots under `quote`, without stock or historical warnings. |
+
+Agents should resolve products through search and ask for clarification when matches are ambiguous. Read tools are annotated read-only and idempotent. Successful tool calls return both structured content and a JSON text representation; failures return tool errors.
+
+**`create_quote` is non-idempotent:** every successful call creates another draft. A failed or timed-out network request may already have committed. Do not automatically retry an uncertain creation outcome; inspect API logs before retrying.
+
+## Quick Start
+
+Use Node.js 22+ and run commands from the repository root. The SQLite native addon may require a C++ build toolchain if a prebuilt binary is unavailable.
 
 ```sh
 npm install
 npm run dev:api
 ```
 
-In a second terminal, start the frontend:
+In a second terminal:
 
 ```sh
 npm run dev:web
 ```
 
-Open the Vite URL printed in the terminal (normally `http://localhost:5173`). Select products, enter positive whole-number quantities, and create a draft. The result shows saved names, SKUs, unit prices, subtotals, and a BRL total. Copy the quote ID to retrieve it later with “Find quote”. Creation warnings are temporary and disappear when retrieving a saved quote; drafts do not reserve stock. The catalog shows current stock independently of saved quotes.
+The API defaults to `http://127.0.0.1:3000`. Open the frontend URL printed by Vite, normally `http://localhost:5173`. Select products, enter positive whole-number quantities, and create a draft. Use its ID in “Find a saved quote” to retrieve it later.
 
-The web app is the `@inventory-agent/web` npm workspace under `apps/web`. API calls use relative URLs. Vite proxies `/products` and `/quotes` to `http://127.0.0.1:3000`, so no API CORS changes are needed. If you change the API port, update the proxy targets in `apps/web/vite.config.ts`. `npm run dev` remains an alias for starting the API only.
+Vite proxies `/products` and `/quotes` to the API. If you change the API port, update both targets in `apps/web/vite.config.ts`. `npm run dev` is an alias for the API only. For an API process without watching, use `npm start --workspace @inventory-agent/api`.
 
-The API listens on `http://127.0.0.1:3000`. Configure `PORT`, `HOST`, and `DATABASE_PATH` through environment variables:
+## MCP Setup
 
-```sh
-DATABASE_PATH=/tmp/inventory.sqlite PORT=3001 npm run dev
-```
-
-The default database is `apps/api/data/inventory.sqlite` when launched through npm workspace scripts (paths are relative to the API working directory). Parent directories are created automatically. For a non-watching process, use `npm start --workspace @inventory-agent/api`.
-
-On first opening a database, a transactional SQL migration creates `products`, `quotes`, and `quote_items`, then seeds three fictional products: `notebook`, `pen`, and `mug`. `PRAGMA user_version` tracks schema version 1. Reopening preserves data and does not reseed. Local SQLite files and their journal/WAL files are ignored by Git. better-sqlite3 uses a native addon; installation may require a C++ build toolchain if no prebuilt binary is available.
-
-## API
-
-```sh
-curl http://127.0.0.1:3000/products
-
-curl -i http://127.0.0.1:3000/quotes \
-  -H 'Content-Type: application/json' \
-  -d '{"items":[{"productId":"notebook","quantity":2},{"productId":"mug","quantity":1}]}'
-
-# Replace QUOTE_ID with the UUID returned by POST.
-curl http://127.0.0.1:3000/quotes/QUOTE_ID
-```
-
-- `GET /products` returns a product array with current stock and integer prices in cents.
-- `POST /quotes` returns HTTP 201 with `{ "quote": {...}, "warnings": [...] }`. The quote has `id`, `status: "draft"`, `createdAt` (UTC ISO 8601), `items`, and `totalCents`. Each item snapshots `productId`, `name`, `sku`, `quantity`, `unitPriceCents`, and `subtotalCents`.
-- `GET /quotes/:id` returns the quote directly. It reads persisted snapshots, even if a product is changed or deleted. It never returns stock or warnings.
-
-Insufficient or zero stock **allows creation** and produces an `INSUFFICIENT_STOCK` warning only in that POST response. Warnings are never stored; creation neither reserves nor modifies stock. Quote and item inserts commit together or roll back together.
-
-JSON input is strict: quantities must be positive safe integers, IDs must contain a non-whitespace character, items must be nonempty, and extra fields (including client prices) are rejected. Duplicate product IDs are combined. Invalid bodies, unsafe combined quantities, and unsafe calculated amounts return HTTP 400. Missing products and quotes return HTTP 404; unsupported content types return HTTP 415. Unexpected failures return HTTP 500 with a generic error. Errors use `{ "error": "..." }`.
-
-## Verify
-
-```sh
-npm test
-npm run typecheck
-npm run build:web
-```
-
-Tests exercise the core and all API routes using Fastify injection without listening on a port. API tests use isolated in-memory databases plus a temporary file for restart persistence, and cover rollback, snapshots, warnings, validation, and not-found responses. `buildApp` accepts a database connection owned by its caller; the listening entrypoint handles connection shutdown.
-
-The root test and typecheck commands include every workspace. Frontend tests use Vitest, jsdom, and Testing Library with mocked HTTP responses to cover creation payloads, snapshot rendering, transient warnings, retrieval, validation, loading, empty catalogs, and API errors. `npm run build:web` verifies a production bundle in `apps/web/dist`; production hosting must route `/products` and `/quotes` to the API separately because the Vite proxy is development-only. No authentication, product editing, or stock reservation is included.
-
-## MCP server (Milestone 1D)
-
-`apps/mcp` exposes the REST API to local AI clients through the official MCP TypeScript SDK v2 (`@modelcontextprotocol/server`) over stdio, with Zod v4 input and output schemas. It has no database access or QuoteService dependency. Node.js 22+ is required.
-
-Start the API in one terminal with `npm run dev:api`. In another, launch MCP Inspector from the repository root:
+Keep the API running separately. Launch the Inspector from the repository root:
 
 ```sh
 npm run inspect:mcp
-# Equivalent:
-npx @modelcontextprotocol/inspector node --import tsx apps/mcp/src/index.ts
 ```
 
-Connect using stdio, then open Tools to list and call the four tools. The direct server command is `node --import tsx apps/mcp/src/index.ts` (repository root working directory). `npm run start:mcp --silent` also starts it; the silent flag suppresses npm banners on protocol stdout. `npm run dev:mcp --silent` enables watching for development. Diagnostics use stderr.
+Connect over stdio and open Tools to inspect or call the four tools. For a direct stdio server process:
 
-For a local MCP host, configure an entry like this, replacing the absolute paths with your checkout and Node executable as needed:
+```sh
+npm run start:mcp --silent
+```
+
+The silent flag suppresses npm banners on protocol stdout; diagnostics go to stderr. `npm run dev:mcp --silent` enables watching.
+
+For an MCP client that accepts `mcpServers` configuration, use this entry and replace the checkout path (and Node executable if needed):
 
 ```json
 {
@@ -93,19 +99,69 @@ For a local MCP host, configure an entry like this, replacing the absolute paths
 }
 ```
 
-`INVENTORY_API_BASE_URL` defaults to `http://127.0.0.1:3000`; set it in the MCP process environment if the API runs elsewhere. HTTP requests time out after 10 seconds. The API must be running separately. This milestone provides no authentication or remote hosting.
+The host launches its own MCP process. MCP configuration format and location depend on the client. Requests to the API time out after 10 seconds; input and API response contracts are validated with Zod.
 
-- `search_products({"query":"pen"})` fetches the catalog and returns **all** case-insensitive name/SKU substring matches, including IDs, names, SKUs, integer BRL cent prices and observed stock. It never selects among ambiguous matches. No matches returns an empty array.
-- `check_stock({"productId":"pen"})` finds an exact ID in the current catalog. Stock is an observation, with no promise of future availability.
-- `create_quote({"items":[{"productId":"pen","quantity":2}]})` calls `POST /quotes`. It returns the saved draft snapshots, total and temporary warnings, with an explicit availability notice. This changes state, is non-destructive and non-idempotent: repeating it creates another draft. It neither reserves stock nor confirms a sale. API business rules handle duplicate quantities and commercial calculations.
-- `get_quote({"quoteId":"QUOTE_ID"})` calls `GET /quotes/:id` and returns `{ "quote": {...} }` containing saved commercial snapshots only. It provides no historical stock or stock warnings.
+## Testing & Evaluations
 
-Every success includes both structured content and a JSON text representation. Query tools are annotated read-only and idempotent. Invalid tool inputs are rejected before HTTP; API failures and invalid response contracts become actionable tool errors. Failed or timed-out creation requests may have created a draft: do not automatically retry when the outcome is unknown.
+```sh
+npm test
+npm run typecheck
+npm run build:web
+```
 
-`npm test` and `npm run typecheck` include this workspace. MCP tests use an SDK client to exercise discovery, schemas, annotations, results and errors, plus a real subprocess stdio handshake. HTTP tool tests mock REST responses; existing API tests independently verify persistence and business rules. Inspector's browser UI is a manual check.
+Tests and typechecking include all workspaces. Core tests exercise quote rules; API tests use Fastify injection with isolated SQLite databases to check validation, atomic rollback, snapshots, warnings, and restart persistence. Web tests use mocked HTTP responses with Vitest, jsdom, and Testing Library. MCP tests cover schemas, annotations, results, and errors through an SDK client, mocked HTTP responses, and a real subprocess stdio handshake. The web build produces `apps/web/dist`.
 
-## Manual agent evaluation fixtures (Milestone 1E, phase 1)
+The [first manual agent results](docs/evaluation/first-manual-results.md) record these supplied PASS assessments:
 
-Run `npm run eval:setup --silent` to create a fresh, isolated temporary SQLite database and print its absolute path. Setup reuses the API initializer and adds two distinguishable glove products for ambiguity testing. It never resets or opens the development database, and each run starts with no quotes.
+| Scenario | Observed behavior | Environment |
+| --- | --- | --- |
+| Normal quote | 2 notebooks + 3 pens; BRL 35.50 draft, with no-reservation/no-sale explanation. | Development |
+| Insufficient stock | 2 mugs; BRL 48.00 draft; reported 2 requested, 0 available, and uncertain availability. | Development |
+| Ambiguous product | Asked before choosing latex or nitrile; after “Latex”, saved 3 glove boxes for BRL 96.00. | Isolated evaluation |
+| Nonexistent product | Reported no N95/3M match and requested another name or SKU; no quote creation reported. | Isolated evaluation |
+| API unavailable | Search returned a connection error; agent reported it could not consult the catalog or create a quote, without using shell commands. | Isolated evaluation |
 
-See [the evaluation guide](docs/evaluation/README.md) for exact API/MCP startup commands, the deterministic catalog, five manual scenarios and objective pass/fail criteria. Copy [the results template](docs/evaluation/results-template.md) to record actual agent tool calls and outcomes. These scenarios have not been executed by a model as part of fixture setup or unit tests.
+**Each scenario was observed once.** Some runs differed from the [documented evaluation protocol](docs/evaluation/README.md), including mug quantity, nonexistent product, and the glove clarification follow-up. Normal-quote retrieval evidence was not supplied. The nonexistent-product assessment is based on the response; its full tool trace was unavailable. These observations do not establish statistical reliability or comprehensive coverage and are not automated model evaluations.
+
+For repeatable manual runs, `npm run eval:setup --silent` creates a fresh temporary SQLite database with the base catalog and two glove alternatives, prints its absolute path, and leaves the development database untouched. Follow the [evaluation guide](docs/evaluation/README.md) for isolated API/MCP startup and fault setup, and capture evidence with the [results template](docs/evaluation/results-template.md). Fixture tests verify setup and isolation, not agent behavior.
+
+## Technical Details
+
+### REST contracts
+
+| Endpoint | Response |
+| --- | --- |
+| `GET /products` | Product array: `id`, `name`, `sku`, `unitPriceCents`, `stock`. Search filtering happens in MCP. |
+| `POST /quotes` | HTTP 201 with `{ "quote": {...}, "warnings": [...] }`. Accepts only `items` containing `productId` and `quantity`. |
+| `GET /quotes/:id` | The saved quote directly, without the MCP wrapper, stock, or warnings. |
+
+A quote contains `id`, `status: "draft"`, `createdAt` as a UTC ISO 8601 string, `items`, and `totalCents`. Each item stores `productId`, `name`, `sku`, `quantity`, `unitPriceCents`, and `subtotalCents`.
+
+JSON validation rejects extra fields (including client prices), empty item arrays, blank IDs, and quantities that are not positive safe integers. Duplicate IDs are combined; unsafe combined quantities or amounts return HTTP 400. Missing products or quotes return 404, unsupported content types return 415, and unexpected failures return a generic 500. Errors use `{ "error": "..." }`. Monetary calculations use integer BRL cents.
+
+### Snapshots and availability
+
+Product names, SKUs, and prices are snapshotted so a saved quote retains its original commercial terms even if the catalog changes or a product is deleted. Stock warnings describe an observation at creation time, so they are transient rather than stored as a lasting availability claim.
+
+Insufficient stock still permits a draft. The creation response includes `INSUFFICIENT_STOCK` warnings with `productId`, `requestedQuantity`, and `availableStock`. Retrieval cannot recover those warnings or historical stock. Draft creation never changes stock.
+
+### Configuration and persistence
+
+| Variable | Process | Default |
+| --- | --- | --- |
+| `HOST` | API | `127.0.0.1` |
+| `PORT` | API | `3000` |
+| `DATABASE_PATH` | API | `./data/inventory.sqlite`, relative to the API working directory |
+| `INVENTORY_API_BASE_URL` | MCP | `http://127.0.0.1:3000` |
+
+With npm workspace scripts, the default database is `apps/api/data/inventory.sqlite`. Parent directories are created automatically. Set variables in the relevant process; setting `DATABASE_PATH` on MCP does not select the API database. The MCP URL must use HTTP(S) without a query or fragment.
+
+SQLite uses WAL mode, foreign keys, and strict tables. Transactional initialization creates schema version 1 (`PRAGMA user_version`) and seeds Moonbeam Notebook, Comet Pen, and Orbit Mug. Reopening preserves data without reseeding. Quote and item inserts commit or roll back together. Local database files are ignored by Git.
+
+`QuoteService` depends on repository interfaces and injected ID/clock functions. `buildApp` accepts a caller-owned database connection, allowing route tests without opening a listening port; the API entrypoint owns connection shutdown.
+
+## Limitations
+
+This is a local-only MVP without authentication, remote hosting, payment processing, stock reservation, or sale confirmation. It has no product-editing interface. Stock observations do not guarantee future availability, and draft creation has no idempotency key.
+
+The Vite proxy is development-only. A web bundle alone does not provide a hosted application; any future hosting setup must route `/products` and `/quotes` to the API separately.
